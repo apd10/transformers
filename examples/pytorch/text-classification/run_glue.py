@@ -462,7 +462,7 @@ def main():
             else:
                 raise ValueError("--do_eval requires a validation dataset or a backup test dataset")
 
-        eval_dataset = raw_datasets["validation_matched" if data_args.task_name == "mnli" else "validation"]
+        eval_dataset = raw_datasets["validation_matched" if (data_args.task_name == "mnli" or data_args.dataset_config_name == "mnli") else "validation"]
         if data_args.max_eval_samples is not None:
             eval_dataset = eval_dataset.select(range(data_args.max_eval_samples))
 

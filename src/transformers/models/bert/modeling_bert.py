@@ -805,7 +805,7 @@ class BertPredictionHeadTransform(nn.Module):
 class BertLMPredictionHead(nn.Module):
     def __init__(self, config, seed, seed_offset, single_robez_array):
         super().__init__()
-        self.transform = BertPredictionHeadTransform(config)
+        self.transform = BertPredictionHeadTransform(config, seed, seed_offset, single_robez_array)
 
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.

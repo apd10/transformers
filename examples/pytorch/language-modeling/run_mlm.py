@@ -61,6 +61,13 @@ MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
+def count_parameters(model):
+    s = 0
+    for p in model.parameters():
+        s+= p.numel()
+        print(type(p), p.numel(), " total:", s)
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 @dataclass
 class ModelArguments:
     """
@@ -112,9 +119,9 @@ class ModelArguments:
     )
 
     def __post_init__(self):
-        if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
+        if self.config_overrides is not None and (self.model_name_or_path is not None):
             raise ValueError(
-                "--config_overrides can't be used in combination with --config_name or --model_name_or_path"
+                "--config_overrides can't be used in combination with --model_name_or_path"
             )
 
 
@@ -325,10 +332,11 @@ def main():
     else:
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")
-        if model_args.config_overrides is not None:
-            logger.info(f"Overriding config: {model_args.config_overrides}")
-            config.update_from_string(model_args.config_overrides)
-            logger.info(f"New config: {config}")
+    
+    if model_args.config_overrides is not None:
+        logger.info(f"Overriding config: {model_args.config_overrides}")
+        config.update_from_string(model_args.config_overrides)
+        logger.info(f"New config: {config}")
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
@@ -358,9 +366,10 @@ def main():
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForMaskedLM.from_config(config)
-
     model.resize_token_embeddings(len(tokenizer))
 
+    print(model)
+    print("Total parameters", count_parameters(model))
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     if training_args.do_train:
