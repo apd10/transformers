@@ -253,7 +253,7 @@ class BertEmbeddings(nn.Module):
 
 
 class BertSelfAttention(nn.Module):
-    def __init__(self, config, position_embedding_type=None, seed=1, seed_offset=1, single_robez_array=None):
+    def __init__(self, config, position_embedding_type=None, seed=1, seed_offset=4096, single_robez_array=None):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
@@ -432,7 +432,7 @@ class BertSelfOutput(nn.Module):
 
 
 class BertAttention(nn.Module):
-    def __init__(self, config, position_embedding_type=None, seed=1, seed_offset=1, single_robez_array=None):
+    def __init__(self, config, position_embedding_type=None, seed=1, seed_offset=4096, single_robez_array=None):
         super().__init__()
         seed_offset = int(seed_offset / 2)
         self.self = BertSelfAttention(config, position_embedding_type=position_embedding_type, seed=seed, seed_offset=seed_offset, single_robez_array=single_robez_array)
@@ -825,7 +825,7 @@ class BertLMPredictionHead(nn.Module):
                 self.hashed_weight = single_robez_array
                 init_factor = np.sqrt(1 / config.hidden_size) / np.sqrt(1/10000)
 
-            self.decoder = RzLinear(config.hidden_size, config.vocab_size, config.robez_chunk_size, self.hashed_weight, seed=seed+1)
+            self.decoder = RzLinear(config.hidden_size, config.vocab_size, config.robez_chunk_size, self.hashed_weight, seed=seed+1, init_factor=init_factor, bias=False)
             assert(seed_offset > 1)
         else:
             self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -1023,7 +1023,7 @@ class BertModel(BertPreTrainedModel):
     `add_cross_attention` set to `True`; an `encoder_hidden_states` is then expected as an input to the forward pass.
     """
 
-    def __init__(self, config, add_pooling_layer=True, seed=1, seed_offset=1,single_robez_array=None):
+    def __init__(self, config, add_pooling_layer=True, seed=1, seed_offset=4096,single_robez_array=None):
         super().__init__(config)
         self.config = config
         seed_offset = int(seed_offset / 3)
@@ -1468,7 +1468,7 @@ class BertForMaskedLM(BertPreTrainedModel):
     _keys_to_ignore_on_load_unexpected = [r"pooler"]
     _keys_to_ignore_on_load_missing = [r"position_ids", r"predictions.decoder.bias"]
 
-    def __init__(self, config, seed=1, seed_offset=1024):
+    def __init__(self, config, seed=1, seed_offset=4096):
         super().__init__(config)
 
         if config.is_decoder:

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#-m torch.distributed.launch --nproc_per_node 3i!/usr/bin/env python
 # coding=utf-8
 # Copyright 2020 The HuggingFace Team All rights reserved.
 #
@@ -65,7 +65,7 @@ def count_parameters(model):
     s = 0
     for p in model.parameters():
         s+= p.numel()
-        print(type(p), p.numel(), " total:", s)
+        print(type(p), p.numel(), id(p.data), " total:", s)
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 @dataclass
@@ -366,7 +366,8 @@ def main():
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForMaskedLM.from_config(config)
-    model.resize_token_embeddings(len(tokenizer))
+    if config.robez != 1:
+        model.resize_token_embeddings(len(tokenizer))
 
     print(model)
     print("Total parameters", count_parameters(model))
