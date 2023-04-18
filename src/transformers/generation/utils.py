@@ -734,9 +734,11 @@ class GenerationMixin:
             # update attention mask
             if "attention_mask" in model_kwargs:
                 attention_mask = model_kwargs["attention_mask"]
-                model_kwargs["attention_mask"] = torch.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
-                )
+                #if attention_mask.shape[-1] <= model_kwargs["past_key_values"][0][0].shape[-2]:
+                if attention_mask.shape[-1] <= self.model.decoder.layers[0].self_attn.idx_kept_max:
+                    model_kwargs["attention_mask"] = torch.cat(
+                        [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+                    )
         else:
             # update decoder attention mask
             if "decoder_attention_mask" in model_kwargs:
@@ -2527,6 +2529,8 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            #print("saved size:", outputs.past_key_values[0][0].shape, outputs.past_key_values[1][0].shape)
+            print("Max allocated", torch.cuda.max_memory_allocated() // 1000000, "MB")
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need

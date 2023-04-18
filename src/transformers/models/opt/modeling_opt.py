@@ -15,7 +15,7 @@
 """ PyTorch OPT model."""
 import random
 from typing import List, Optional, Tuple, Union
-
+import pdb
 import torch
 import torch.utils.checkpoint
 from torch import nn
@@ -150,8 +150,72 @@ class OPTAttention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
+        # modified kv cache params
+        self.kv_reduced = False # flag set when we first start storign
+        self.budget = -1 # budget in tokens stored in kvcache
+        self.layer_num = -1 # layer number for logging / debugging
+        self.idx_kept = None   # the actual idx that are stored
+        self.idx_kept_max = 0 # keeps track of the total input token length
+
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+
+
+
+    def update_idx(self, idx, input_len):
+        if self.idx_kept is None:
+            self.idx_kept = idx
+            self.idx_kept_max = input_len
+        else:
+            self.idx_kept = torch.cat([self.idx_kept, torch.zeros((1,), device=self.idx_kept.device, dtype=torch.int64) + self.idx_kept_max ], dim=0)
+            self.idx_kept = self.idx_kept[idx]
+            self.idx_kept_max += 1
+
+    def random_sample(self, past_key_value):
+        input_len = past_key_value[0].shape[2]
+        idx = torch.randperm(past_key_value[0].shape[2])[:self.budget]
+        past_key_value = past_key_value[0][:,:,idx,:], past_key_value[1][:,:,idx,:]
+        self.update_idx(idx, input_len)
+        return past_key_value
+
+
+    def last_sample(self, past_key_value):
+        input_len = past_key_value[0].shape[2]
+        idx = torch.arange(input_len)[-self.budget:]
+        past_key_value = past_key_value[0][:,:,-self.budget:,:], past_key_value[1][:,:,-self.budget:,:]
+        self.update_idx(idx, input_len)
+        return past_key_value
+
+
+    def update_attention_mask(self, attention_mask):
+        if self.budget <= 0:
+            return attention_mask
+        if self.kv_reduction_mode in ["random", "last"]:
+              attention_mask = attention_mask[:, :, : ,  torch.cat([self.idx_kept, torch.zeros((1,), device=self.idx_kept.device, dtype=torch.int64) - 1 ], dim=0)]
+        return attention_mask
+
+
+    def update_past_key_value(self, past_key_value, attn_probs):
+        shape = past_key_value[0].shape
+        num_len = shape[2]
+        bsz = shape[0]
+        if num_len > self.budget and self.budget > 0:
+            #if self.layer_num == 0:
+                #import pdb
+                #pdb.set_trace()
+            attn_probs_view = attn_probs.view(bsz, self.num_heads, attn_probs.shape[1], attn_probs.shape[2])
+            if self.kv_reduction_mode == "random":
+                past_key_value = self.random_sample(past_key_value)
+            elif self.kv_reduction_mode == "last":
+                past_key_value = self.last_sample(past_key_value)
+            else:
+                raise NotImplementedError
+            self.kv_reduced = True
+        else:
+            self.idx_kept = torch.arange(num_len, dtype=torch.int64, device=past_key_value[0].device)
+            self.idx_kept_max = num_len
+        return past_key_value
+      
 
     def forward(
         self,
@@ -163,9 +227,19 @@ class OPTAttention(nn.Module):
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
-
+        
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
+        #if past_key_value is not None:
+        #    print(self.layer_num, "h:", hidden_states.shape, "a:", attention_mask.shape, "p0:", past_key_value[0].shape, "p1:", past_key_value[1].shape, flush=True)
+          
+        if self.kv_reduced:
+            attention_mask = self.update_attention_mask(attention_mask)
+            #pdb.set_trace()
+
+        #if past_key_value is not None:
+        #    print("*", self.layer_num, "h:", hidden_states.shape, "a:", attention_mask.shape, "p0:", past_key_value[0].shape, "p1:", past_key_value[1].shape, flush=True)
+
         is_cross_attention = key_value_states is not None
 
         bsz, tgt_len, _ = hidden_states.size()
@@ -268,6 +342,8 @@ class OPTAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
 
         attn_output = self.out_proj(attn_output)
+
+        past_key_value = self.update_past_key_value(past_key_value, attn_probs)
 
         return attn_output, attn_weights_reshaped, past_key_value
 
@@ -612,6 +688,9 @@ class OPTDecoder(OPTPreTrainedModel):
             return_dict (`bool`, *optional*):
                 Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
         """
+        #if self.layers[0].self_attn.kv_reduced:
+            #import pdb
+            #pdb.set_trace()
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -635,7 +714,10 @@ class OPTDecoder(OPTPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape
-        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        #past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        past_key_values_length = self.layers[0].self_attn.idx_kept_max if past_key_values is not None else 0
+
+
         # required mask seq length can be calculated via length of past
         mask_seq_length = past_key_values_length + seq_length
 
@@ -673,6 +755,7 @@ class OPTDecoder(OPTPreTrainedModel):
                         f" {head_mask.size()[0]}."
                     )
 
+        #print("Decoding ...", hidden_states.shape, inputs_embeds.shape, pos_embeds.shape, attention_mask.shape, past_key_values_length, mask_seq_length, flush=True)
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
@@ -701,6 +784,7 @@ class OPTDecoder(OPTPreTrainedModel):
                     None,
                 )
             else:
+
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=causal_attention_mask,

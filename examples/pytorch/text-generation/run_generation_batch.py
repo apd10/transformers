@@ -323,6 +323,7 @@ def main():
     parser.add_argument("--xlm_language", type=str, default="", help="Optional language when used with the XLM model.")
 
     parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
+    parser.add_argument("--batch", type=int, default=42, help="batch")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
     parser.add_argument("--num_return_sequences", type=int, default=1, help="The number of samples to generate.")
     parser.add_argument(
@@ -332,6 +333,12 @@ def main():
     )
     parser.add_argument(
         "--jit", type=bool, default=False, help="Whether or not to use jit trace to accelerate inference"
+    )
+    parser.add_argument(
+        "--budget", type=str, default="200", help="budget for each layer"
+    )
+    parser.add_argument(
+        "--kv_reduction_mode", type=str, default="random", help="kv reduction mode"
     )
     args = parser.parse_args()
 
@@ -355,6 +362,16 @@ def main():
 
     model = model_class.from_pretrained(args.model_name_or_path)
     model.to(args.device)
+    
+    budget = [ int(b) for b in args.budget.split(",")]
+    for idx in range(len(model.model.decoder.layers)):
+        model.model.decoder.layers[idx].self_attn.layer_num = idx
+        model.model.decoder.layers[idx].self_attn.kv_reduction_mode = args.kv_reduction_mode
+        if len(budget) == 1:
+            model.model.decoder.layers[idx].self_attn.budget = budget[0]
+        else:
+            model.model.decoder.layers[idx].self_attn.budget = budget[idx]
+        
 
     if args.fp16:
         model.half()
@@ -364,49 +381,16 @@ def main():
 
     # load using batch
     dataset = create_dataset("hellaswag", split="validation")
-    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=args.batch, shuffle=False)
 
+
+    # only run openAI opt models
+
+    assert(args.model_type not in PREPROCESSING_FUNCTIONS.keys())
+    assert(not args.jit)
     for idx, doc in enumerate(dataloader):
         prompts = doc['prompt']
         break;
-
-    prompt_text = args.prompt if args.prompt else input("Model prompt >>> ")
-
-    # Different models need different input formatting and/or extra arguments
-    requires_preprocessing = args.model_type in PREPROCESSING_FUNCTIONS.keys()
-    if requires_preprocessing:
-        prepare_input = PREPROCESSING_FUNCTIONS.get(args.model_type)
-        preprocessed_prompt_text = prepare_input(args, model, tokenizer, prompt_text)
-
-        if model.__class__.__name__ in ["TransfoXLLMHeadModel"]:
-            tokenizer_kwargs = {"add_space_before_punct_symbol": True}
-        else:
-            tokenizer_kwargs = {}
-
-        encoded_prompt = tokenizer.encode(
-            preprocessed_prompt_text, add_special_tokens=False, return_tensors="pt", **tokenizer_kwargs
-        )
-    else:
-        prefix = args.prefix if args.prefix else args.padding_text
-        encoded_prompt = tokenizer.encode(prefix + prompt_text, add_special_tokens=False, return_tensors="pt")
-    encoded_prompt = encoded_prompt.to(args.device)
-
-    if encoded_prompt.size()[-1] == 0:
-        input_ids = None
-    else:
-        input_ids = encoded_prompt
-
-    if args.jit:
-        jit_input_texts = ["jit"]
-        jit_inputs = prepare_jit_inputs(jit_input_texts, model, tokenizer)
-        torch._C._jit_set_texpr_fuser_enabled(False)
-        model.config.return_dict = False
-        traced_model = torch.jit.trace(model, jit_inputs, strict=False)
-        traced_model = torch.jit.freeze(traced_model.eval())
-        traced_model(*jit_inputs)
-        traced_model(*jit_inputs)
-
-        model = _ModelFallbackWrapper(traced_model, model)
 
     encoded_prompts = tokenizer.batch_encode_plus(prompts, add_special_tokens=False, return_tensors="pt", padding=True)
     input_ids = encoded_prompts["input_ids"].cuda()
@@ -414,7 +398,7 @@ def main():
 
     output_sequences = model.generate(
         input_ids=input_ids,
-        max_length=2048,
+        max_length=args.length,
         temperature=args.temperature,
         top_k=args.k,
         top_p=args.p,
@@ -423,6 +407,7 @@ def main():
         num_return_sequences=args.num_return_sequences,
         attention_mask = attention_mask
     )
+    print(" Max memory allocated", torch.cuda.max_memory_allocated())
 
     # Remove the batch dimension when returning multiple sequences
     if len(output_sequences.shape) > 2:
@@ -436,17 +421,14 @@ def main():
 
         # Decode text
         text = tokenizer.decode(generated_sequence, clean_up_tokenization_spaces=True)
-
+      
         # Remove all text after the stop token
         text = text[: text.find(args.stop_token) if args.stop_token else None]
 
-        # Add the prompt at the beginning of the sequence. Remove the excess text that was used for pre-processing
-        total_sequence = (
-            prompt_text + text[len(tokenizer.decode(encoded_prompt[0], clean_up_tokenization_spaces=True)) :]
-        )
-
-        generated_sequences.append(total_sequence)
-        print(total_sequence)
+        generated_sequences.append(text)
+        print("input: ", prompts[generated_sequence_idx])
+        print(" ---------- ")
+        print("output: ", text)
 
     return generated_sequences
 
